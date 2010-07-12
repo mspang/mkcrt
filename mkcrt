@@ -1,0 +1,131 @@
+#!/usr/bin/python
+
+# Dirt simple SSL certificate authority
+
+import time, sys, random, os
+from M2Crypto import X509, EVP, RSA
+
+def usage():
+  print >>sys.stderr, "Usage: %s command" % sys.argv[0]
+  print >>sys.stderr
+  print >>sys.stderr, "Commands:"
+  print >>sys.stderr, "  ca cakeyfile cacertfile"
+  print >>sys.stderr, "  req cn keyfile reqfile"
+  print >>sys.stderr, "  sign cakeyfile cacertfile reqfile certfile"
+  print >>sys.stderr
+  sys.exit(2)
+
+def noise(p, n, out=sys.stderr):
+  out.write(['.', '+', '*', '\n'][p])
+  out.flush()
+
+def mkreq(subject, length):
+  key = EVP.PKey()
+  key.assign_rsa(RSA.gen_key(length, 0x10001, noise))
+
+  req = X509.Request()
+  req.set_pubkey(key)
+  req.set_version(3)
+
+  subj = req.get_subject()
+  for attr in subject:
+    setattr(subj, attr, subject[attr])
+
+  req.sign(key, 'sha1')
+  assert req.verify(key)
+  return req, key
+
+def req2cert(req, issuer, extensions=None):
+  if not req.verify(req.get_pubkey()):
+    print >>sys.stderr, 'Client forgot to sign'
+    sys.exit(1)
+
+  cert = X509.X509()
+  cert.set_version(3)
+  cert.set_serial_number(random.getrandbits(32))
+  cert.set_issuer(issuer)
+  cert.set_pubkey(req.get_pubkey())
+  cert.set_subject(req.get_subject())
+
+  now = int(time.time())
+  begins = cert.get_not_before()
+  begins.set_time(now)
+  expires = cert.get_not_after()
+  expires.set_time(now + 60 * 60 * 24 * 365)
+
+  if extensions:
+    for ext in extensions:
+      cert.add_ext(X509.new_extension(*ext))
+
+  return cert
+
+def doca(cakeyfile, cacertfile):
+  req, key = mkreq({
+    'CN':  "",
+    'O': "Afro Authority",
+    'OU': "Hairdrying",
+    'C': "US",
+    'ST': "",
+    'L': ""
+  }, 1024)
+
+  cert = req2cert(req, req.get_subject(), [
+    ('basicConstraints', 'CA:TRUE', 1),
+    ('keyUsage', 'keyCertSign, cRLSign'),
+  ])
+
+  cert.sign(key, 'sha1')
+  cert.save_pem(cacertfile)
+  key.save_key(cakeyfile, 'aes_128_cbc')
+  sys.stdout.write(cert.as_text())
+
+def doreq(cn, keyfile, reqfile):
+  req, key = mkreq({
+    'CN':  cn,
+    'O': "Faucet Foundry",
+    'OU': "Filth Filtration",
+    'C': "US",
+    'ST': "",
+    'L': ""
+  }, 1024)
+
+  req.save_pem(reqfile)
+  key.save_key(keyfile, None)
+  sys.stdout.write(req.as_text())
+
+def dosign(cakeyfile, cacertfile, reqfile, certfile):
+  cakey = EVP.load_key(cakeyfile)
+  cacert = X509.load_cert(cacertfile)
+  req = X509.load_request(reqfile)
+
+  cert = req2cert(req, cacert.get_subject(), [
+    ('basicConstraints', 'CA:FALSE', 1),
+    ('extendedKeyUsage', 'serverAuth, clientAuth, emailProtection'),
+  ])
+
+  cert.sign(cakey, 'sha1')
+  cert.save_pem(certfile)
+  sys.stdout.write(cert.as_text())
+
+def main(argv):
+  os.umask(077)
+  if len(argv) < 2:
+    usage()
+  if argv[1] == "ca":
+    if len(argv) != 4:
+      usage()
+    certfile, keyfile = argv[2:]
+    doca(*argv[2:])
+  elif argv[1] == "req":
+    if len(argv) != 5:
+      usage()
+    doreq(*argv[2:])
+  elif argv[1] == "sign":
+    if len(argv) != 6:
+      usage()
+    dosign(*argv[2:])
+  else:
+    usage()
+
+if __name__ == '__main__':
+  main(sys.argv)
